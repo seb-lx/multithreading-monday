@@ -1,3 +1,7 @@
+/*
+    Based on the book "C++ Concurrency in Action" by Anthony Williams
+*/
+
 #include <mutex>
 #include <memory>
 #include <stack>

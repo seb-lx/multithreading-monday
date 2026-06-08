@@ -1,5 +1,5 @@
 # multithreading monday
-some experiments with multihreading in C++ mostly from the book "C++ Concurrency in Action" by Anthony Williams
+some experiments with multihreading in C++
 
 ## notes
 notes can be found in docs/
