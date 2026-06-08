@@ -14,11 +14,10 @@ auto main() -> int {
         // producer adds element to queue
         auto producer = std::jthread([&tsq]() {
             for (int i = 1; i <= 10; ++i) {
-                //std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 std::cout << "[Producer] pushing element: " << i << "\n";
                 tsq.push(i);
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(110));
         });
 
 
