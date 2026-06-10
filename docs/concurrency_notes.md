@@ -249,8 +249,8 @@ one of the main causes of concurrency-related bugs is the incorrect use of share
 // best to group mutex and data together
 class data_wrapper {
 private:
-    std::mutex m;
-    int data;
+    std::mutex m_;
+    int data_;
 };
 
 
@@ -261,6 +261,7 @@ auto sharing_data_between_threads() -> void {
     // this fixes the problem of manual locking multiple mutexes, when not done
     // in the same order can lead to a deadlock
 
+    // !!!
     // warning: it must be avoided to pass references or pointers to data
     //          outside of the scope of the lock
     //          any other piece of code that has access to the pointer or
@@ -360,21 +361,64 @@ atomic operations are used to replace mutex based synchronization (sometimes ato
 ### modification orders
 this applies only to data that is shared between threads (no thread-local or stack data)
 
-enforced modification orders through mutexes or atomics ensure that each thread sees a coherent view of memory. a modification order is a single, independent, global timeline of values for one specific variable starting at its initialization. threads writing to that variable append the value at the end of the modification order. the order will vary between runs, but in any given execution all threads in the system must agree on the order. there are several rules that prevent the CPU from applying aggressive reorder optimizations that would break this coherent view such as speculative execution.
+- enforced modification orders through mutexes or atomics ensure that each thread sees a coherent view of memory. a modification order is a single, independent, global timeline of values for one specific variable starting at its initialization. threads writing to that variable append the value at the end of the modification order. the order will vary between runs, but in any given execution all threads in the system must agree on the order (because "The cache coherence protocol (e.g. MESI on x86) is what enforces agreement between cores running truly in parallel. The cores negotiate over the cache bus/interconnect. One store wins the bus arbitration and becomes visible first — that's what establishes the order. ... The threads run in parallel; the visibility of their writes gets serialized by the hardware."). there are several rules that prevent the CPU from applying aggressive reorder optimizations that would break this coherent view such as speculative execution.
 
-"The C++ Abstract Machine: The C++ memory model is defined abstractly. It states that if two expressions in different threads evaluate the same memory location concurrently, and at least one modifies it, they must be synchronized. If they are not, it is a data race. The standard does not care if you have 1 core or 1,000 cores; un-synchronized interleaved execution shatters the logical modification order all the same."
+- "The C++ Abstract Machine: The C++ memory model is defined abstractly. It states that if two expressions in different threads evaluate the same memory location concurrently, and at least one modifies it, they must be synchronized. If they are not, it is a data race. The standard does not care if you have 1 core or 1,000 cores; un-synchronized interleaved execution shatters the logical modification order all the same."
 
-using atomic types for variables will ensure that the compiler generates necessary synchronization instructions (barriers/fences) so that physical cache controllers enforce this strict global modification order across all CPU cores automatically. for example if a thread reads an atomic integer and increments it (fetch and add), the core it runs on locks the cache line for that variable. even if another thread on another core accesses and increments the same variable, it must wait until the first core is done and is thus forced to read the updated value. using atomic variables forces the compiler to generate a single, unbroken, globally agreed-upon timeline.
+- happens-before and synchronize-with relationships
+    - synchronize-with relationship only possible for operations between atomic types, suitably-tagged atomic write synchronizes with suitably-tagged atomic read, enables inter-thread happens-before relationships
+    - happens-before relationship specifies which operations see the effects of which other operations
+        - in the single-threaded case (or within one thread, intra thread) this is simple as each operation that sequenced before another it happens before it
+        - in the multi-threaded case, if operation A in one thread synchronizes with operation B in another thread, then A inter-thread happens before B
+        - it is also transitive
+
+- there are three models of ordering which influence the consequences of operation ordering and synchronize-with relationship
+    - sequentially consistent ordering (std::memory_order_seq_cst) is the default: behavior of the program is consistent with sequential view, implies total ordering, "if all operations on instances of atomics types are sequentially consistent, the behavior of a multithreaded program is as if all these operations were performed in some particular sequence by a single thread.", can however have a large performance penalty since synchronization between processors/cores is required for a consistent view
+    - non-sequentially consistent orderings: there is no single global order of events that every thread agrees to and sees, there are no more neatly interleaving operations, true concurrent execution, different CPU caches and internal buffers can hold different values for the same memory, compiler instruction reordering
+        - relaxed ordering (std::memory_order_relaxed): atomic types with relaxed ordering do not participate in synchronizes-with relationship, no requirement on ordering relative to other threads
+        - acquire-release ordering (std::memory_order_consume, std::memory_order_acquire, std::memory_order_release, and std::memory_order_acq_rel): atomic loads are acquire operations, atomic stores are release operations, and atomic read-modify-write operations are either or both. synchronization is pairwise between threads, release synchronizes-with acquire that reads the written value, "In order to provide any synchronization, acquire and release operations must be paired up. The value stored by a release operation must be seen by an acquire operation for either to have any effect.
+
+- within a thread the operations on atomic variables are always sequenced-before (happens-before relationship) regardless of memory order. the memory order only changes the inter-thread visibility guarantees
+
+- in addition of thinking about thread interleaving, for atomics think about "when a thread reads a value, which write does it actually see?"
+
+
+seq_cst total order
+│
+│   "All seq_cst operations have a universal timestamp.
+│    Everyone agrees on the order, period."
+│
+└──▶ synchronized-with (subset of the above)
+        │
+        │   "This specific load read this specific store's
+        │    value — so everything before the store
+        │    happens-before everything after the load."
+        │
+        └──▶ happens-before chain
+
+
+
+
+- using atomic types for variables will ensure that the compiler generates necessary synchronization instructions (barriers/fences) so that physical cache controllers enforce this strict global modification order across all CPU cores automatically. for example if a thread reads an atomic integer and increments it (fetch and add), the core it runs on locks the cache line for that variable. even if another thread on another core accesses and increments the same variable, it must wait until the first core is done and is thus forced to read the updated value. using atomic variables forces the compiler to generate a single, unbroken, globally agreed-upon timeline.
 
 - Question: "Why are we talking about a "timeline" of variable values, instead of a coherent current value of a variable?"
     - mainly due to multi-core hardware caches. each core caches values, if it is a shared value, each cache might contain a different value before all caches are synchronized, and since there is a propagation delay the modification order would collapse if it is not enforced through cache coherence
 
+Core 1               Core 2
+  |                    |
+Store Buffer        Store Buffer
+  |                    |
+L1 Cache  ←——→  L1 Cache   (cache coherence protocol)
+  |                    |
+        L2/L3 Cache (shared)
+              |
+            RAM
 
-using mutexes or atomics basically introduce memory fences.
-- mutex lock() and unlock() mark the critical section and tell the CPU that no instructions within that critical section is allowed to be either speculatively executed before or delayed past it. the CPU can change the order of instructions within and outside of the critical section (the memory fences). it must make sure that no instructions leak outside.
-- by default atomic operations use sequential consistency memory ordering (std::memory_order_seq_cst) that introduces memory fences when using atomic instructions. these memory fences regulate only memory operations (RAM/cache loads/reads and stores/writes), all other instructions (like local registers) are independent and can be optimized by the CPU. in the case of atomic store() operations: all memory operations must be executed before (memory writes are buffered and later applied in batch, this ensures that every single memory write is flushed), it acts as physical gate that prevents the CPU from reordering so that a memory write before the atomic store in the code is also guaranteed to be executed before
-    - "A default atomic write, however, forces the core to empty that Store Buffer, lock the cache line, and synchronize across the hardware interconnect with all other cores." -> can relax rules
-        - relaxed: basically only ensures that atomic instructions are performed atomically without any constraints on memory ordering
+- using mutexes or atomics basically introduce memory fences.
+    - mutex lock() and unlock() mark the critical section and tell the CPU that no instructions within that critical section is allowed to be either speculatively executed before or delayed past it. the CPU can change the order of instructions within and outside of the critical section (the memory fences). it must make sure that no instructions leak outside.
+    - by default atomic operations use sequential consistency memory ordering (std::memory_order_seq_cst) that introduces memory fences when using atomic instructions. these memory fences regulate only memory operations (RAM/cache loads/reads and stores/writes), all other instructions (like local registers) are independent and can be optimized by the CPU. in the case of atomic store() operations: all memory operations must be executed before (memory writes are buffered and later applied in batch, this ensures that every single memory write is flushed), it acts as physical gate that prevents the CPU from reordering so that a memory write before the atomic store in the code is also guaranteed to be executed before
+        - "A default atomic write, however, forces the core to empty that Store Buffer, lock the cache line, and synchronize across the hardware interconnect with all other cores." -> can relax rules
+            - relaxed: basically only ensures that atomic instructions are performed atomically without any constraints on memory ordering
 
 - SO BASICALLY IN THE DEFAULT SEQUENTIAL CONSISTENT MEMORY ORDERING AN ATOMIC STORE MAKES SURE ALL PREVIOUS MEMORY OPERATIONS ARE FLUSHED AND SYNCHRONIZED ACROSS ALL CORES AND AN ATOMIC LOAD CONNECTS THE ORDERING OF DIFFERENT THREADS ESSENTIALLY APPENDING THE ORDERING AFTER THE LOAD IN ONE THREAD TO THE ORDERING BEFORE THE STORE IN THE OTHER THREAD. 
 
@@ -388,7 +432,10 @@ using mutexes or atomics basically introduce memory fences.
 - Question: "Why are std::atomics faster than mutexes?"
     - the compiler generates single CPU instructions for atomics and the synchronization is handled by the hardware and cache controllers of the CPU, the thread does not stop running. when using mutexes threads are put to sleep when waiting for synchronization.
 
+### atomic operations
+- compare_exchange_weak() can fail spuriously, i.e. the store is not successful, because on some processors there is no single atomic compare-and-exchange instruction and the processor cannot guarantee that the instructions were performed atomically. it should therefore be used in a loop. 
 
+### synchronizing operations and enforcing ordering
 
 
 
