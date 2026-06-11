@@ -16,6 +16,7 @@
 #include <thread>
 #include <vector>
 
+#include "bench_types.hpp"
 #include "thread_safe_queue.hpp"
 // ── Add new version headers here ─────────────────────────
 #include "thread_safe_queue_v2.hpp"
@@ -29,7 +30,7 @@ constexpr std::size_t NUM_ITERATIONS   = 10;
 //  Test 1: Concurrent push, then sequential verification
 // ─────────────────────────────────────────────────────────
 
-template<typename Queue>
+template<typename Queue, typename T = int>
 auto test_concurrent_push(const std::string& label, std::size_t num_threads) -> bool {
     std::cout << "  [" << label << "] concurrent push ("
               << num_threads << " threads x " << ITEMS_PER_THREAD << " items)... ";
@@ -45,14 +46,14 @@ auto test_concurrent_push(const std::string& label, std::size_t num_threads) -> 
             threads.emplace_back([&queue, t]() {
                 auto base = static_cast<int>(t * ITEMS_PER_THREAD);
                 for (std::size_t i = 0u; i < ITEMS_PER_THREAD; ++i) {
-                    queue.push(base + static_cast<int>(i));
+                    queue.push(T{base + static_cast<int>(i)});
                 }
             });
         }
         for (auto& th : threads) { th.join(); }
 
         // drain and verify
-        auto values = std::set<int>{};
+        auto values = std::set<T>{};
         bool ok = true;
 
         while (!queue.empty()) {
@@ -83,7 +84,7 @@ auto test_concurrent_push(const std::string& label, std::size_t num_threads) -> 
 //  Test 2: Concurrent push + pop simultaneously
 // ─────────────────────────────────────────────────────────
 
-template<typename Queue>
+template<typename Queue, typename T = int>
 auto test_concurrent_push_pop(const std::string& label, std::size_t num_threads) -> bool {
     std::cout << "  [" << label << "] push+pop ("
               << num_threads << "P + " << num_threads << "C)... ";
@@ -95,14 +96,14 @@ auto test_concurrent_push_pop(const std::string& label, std::size_t num_threads)
         auto queue   = Queue{};
         auto threads = std::vector<std::thread>{};
 
-        auto consumer_values = std::vector<std::vector<int>>(num_threads);
+        auto consumer_values = std::vector<std::vector<T>>(num_threads);
 
         // producers
         for (std::size_t t = 0u; t < num_threads; ++t) {
             threads.emplace_back([&queue, t]() {
                 auto base = static_cast<int>(t * ITEMS_PER_THREAD);
                 for (std::size_t i = 0u; i < ITEMS_PER_THREAD; ++i) {
-                    queue.push(base + static_cast<int>(i));
+                    queue.push(T{base + static_cast<int>(i)});
                 }
             });
         }
@@ -126,7 +127,7 @@ auto test_concurrent_push_pop(const std::string& label, std::size_t num_threads)
         for (auto& th : threads) { th.join(); }
 
         // drain remaining
-        auto remaining = std::vector<int>{};
+        auto remaining = std::vector<T>{};
         while (true) {
             auto val = queue.try_pop();
             if (!val) { break; }
@@ -134,15 +135,15 @@ auto test_concurrent_push_pop(const std::string& label, std::size_t num_threads)
         }
 
         // merge and verify
-        auto all = std::set<int>{};
+        auto all = std::set<T>{};
         bool has_dups = false;
 
         for (const auto& cv : consumer_values) {
-            for (auto v : cv) {
+            for (const auto& v : cv) {
                 if (!all.insert(v).second) { has_dups = true; }
             }
         }
-        for (auto v : remaining) {
+        for (const auto& v : remaining) {
             if (!all.insert(v).second) { has_dups = true; }
         }
 
@@ -172,11 +173,17 @@ auto main() -> int {
 
     bool all_passed = true;
 
-    all_passed &= test_concurrent_push<TSQ<int>>("TSQ v1 (mutex, T)", hwc);
-    all_passed &= test_concurrent_push_pop<TSQ<int>>("TSQ v1 (mutex, T)", hwc);
-    // ── Add new versions here ────────────────────────────
-    all_passed &= test_concurrent_push<TSQv2<int>>("TSQ v2 (mutex, shared_ptr<T>)", hwc);
-    all_passed &= test_concurrent_push_pop<TSQv2<int>>("TSQ v2 (mutex, shared_ptr<T>)", hwc);
+    // ── int ──────────────────────────────────────────────
+    all_passed &= test_concurrent_push<TSQ<int>, int>("TSQ v1 (int)", hwc);
+    all_passed &= test_concurrent_push_pop<TSQ<int>, int>("TSQ v1 (int)", hwc);
+    all_passed &= test_concurrent_push<TSQv2<int>, int>("TSQ v2 (int)", hwc);
+    all_passed &= test_concurrent_push_pop<TSQv2<int>, int>("TSQ v2 (int)", hwc);
+
+    // ── HeavyPayload (1KB) ───────────────────────────────
+    all_passed &= test_concurrent_push<TSQ<HeavyPayload>, HeavyPayload>("TSQ v1 (1KB)", hwc);
+    all_passed &= test_concurrent_push_pop<TSQ<HeavyPayload>, HeavyPayload>("TSQ v1 (1KB)", hwc);
+    all_passed &= test_concurrent_push<TSQv2<HeavyPayload>, HeavyPayload>("TSQ v2 (1KB)", hwc);
+    all_passed &= test_concurrent_push_pop<TSQv2<HeavyPayload>, HeavyPayload>("TSQ v2 (1KB)", hwc);
 
     std::cout << "\n" << (all_passed ? "All tests PASSED" : "Some tests FAILED") << "\n";
     return all_passed ? 0 : 1;

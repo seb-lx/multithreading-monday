@@ -25,6 +25,7 @@
 #include <thread>
 #include <vector>
 
+#include "bench_types.hpp"
 #include "thread_safe_stack.hpp"
 #include "thread_safe_queue.hpp"
 // ── Add new version headers here ─────────────────────────
@@ -36,8 +37,9 @@
 //  Configuration
 // ═════════════════════════════════════════════════════════
 
-constexpr std::size_t DEFAULT_OPS = 200'000;
-constexpr std::size_t NUM_RUNS    = 5;   // runs per config, take median
+constexpr std::size_t DEFAULT_OPS     = 200'000;
+constexpr std::size_t MAX_HEAVY_OPS   = 50'000;  // cap for 1KB payloads (memory)
+constexpr std::size_t NUM_RUNS        = 5;        // runs per config, take median
 
 
 // ═════════════════════════════════════════════════════════
@@ -75,8 +77,9 @@ auto format_throughput(double ops_per_sec) -> std::string {
 //
 //  Every thread pushes into the container concurrently.
 //  Shows how lock contention scales with thread count.
+//  T = element type (int, HeavyPayload, ...)
 
-template<typename Container>
+template<typename Container, typename T = int>
 auto bench_push_only(std::size_t num_threads, std::size_t ops_per_thread) -> double {
     auto times = std::vector<double>{};
     times.reserve(NUM_RUNS);
@@ -86,7 +89,6 @@ auto bench_push_only(std::size_t num_threads, std::size_t ops_per_thread) -> dou
         auto threads   = std::vector<std::thread>{};
         threads.reserve(num_threads);
 
-        // spin-barrier: all threads wait for the go signal
         auto ready = std::atomic<std::size_t>{0u};
         auto go    = std::atomic<bool>{false};
 
@@ -97,7 +99,7 @@ auto bench_push_only(std::size_t num_threads, std::size_t ops_per_thread) -> dou
                     std::this_thread::yield();
                 }
                 for (std::size_t i = 0u; i < ops_per_thread; ++i) {
-                    container.push(static_cast<int>(i));
+                    container.push(T{static_cast<int>(i)});
                 }
             });
         }
@@ -125,12 +127,10 @@ auto bench_push_only(std::size_t num_threads, std::size_t ops_per_thread) -> dou
 // ═════════════════════════════════════════════════════════
 //
 //  Half the threads push, half pop concurrently.
-//  Most revealing for fine-grained vs coarse-grained locking,
-//  because fine-grained locks can allow concurrent push+pop.
 //  Uses pop(T&) to avoid shared_ptr allocation overhead
 //  so we measure lock contention, not allocator performance.
 
-template<typename Stack>
+template<typename Stack, typename T = int>
 auto bench_stack_mixed(std::size_t num_threads, std::size_t ops_per_thread) -> double {
     if (num_threads < 2u) { return 0.0; }
 
@@ -145,7 +145,7 @@ auto bench_stack_mixed(std::size_t num_threads, std::size_t ops_per_thread) -> d
 
         // pre-fill so consumers don't starve immediately
         for (std::size_t i = 0u; i < ops_per_thread; ++i) {
-            stack.push(static_cast<int>(i));
+            stack.push(T{static_cast<int>(i)});
         }
 
         auto threads = std::vector<std::thread>{};
@@ -161,7 +161,7 @@ auto bench_stack_mixed(std::size_t num_threads, std::size_t ops_per_thread) -> d
                     std::this_thread::yield();
                 }
                 for (std::size_t i = 0u; i < ops_per_thread; ++i) {
-                    stack.push(static_cast<int>(i));
+                    stack.push(T{static_cast<int>(i)});
                 }
             });
         }
@@ -173,7 +173,7 @@ auto bench_stack_mixed(std::size_t num_threads, std::size_t ops_per_thread) -> d
                 while (!go.load(std::memory_order_acquire)) {
                     std::this_thread::yield();
                 }
-                auto val = int{};
+                auto val = T{};
                 for (std::size_t i = 0u; i < ops_per_thread; ) {
                     try {
                         stack.pop(val);
@@ -209,7 +209,7 @@ auto bench_stack_mixed(std::size_t num_threads, std::size_t ops_per_thread) -> d
 //
 //  Same pattern but uses try_pop(T&) instead of exceptions.
 
-template<typename Queue>
+template<typename Queue, typename T = int>
 auto bench_queue_mixed(std::size_t num_threads, std::size_t ops_per_thread) -> double {
     if (num_threads < 2u) { return 0.0; }
 
@@ -223,7 +223,7 @@ auto bench_queue_mixed(std::size_t num_threads, std::size_t ops_per_thread) -> d
         auto queue = Queue{};
 
         for (std::size_t i = 0u; i < ops_per_thread; ++i) {
-            queue.push(static_cast<int>(i));
+            queue.push(T{static_cast<int>(i)});
         }
 
         auto threads = std::vector<std::thread>{};
@@ -238,7 +238,7 @@ auto bench_queue_mixed(std::size_t num_threads, std::size_t ops_per_thread) -> d
                     std::this_thread::yield();
                 }
                 for (std::size_t i = 0u; i < ops_per_thread; ++i) {
-                    queue.push(static_cast<int>(i));
+                    queue.push(T{static_cast<int>(i)});
                 }
             });
         }
@@ -249,7 +249,7 @@ auto bench_queue_mixed(std::size_t num_threads, std::size_t ops_per_thread) -> d
                 while (!go.load(std::memory_order_acquire)) {
                     std::this_thread::yield();
                 }
-                auto val = int{};
+                auto val = T{};
                 for (std::size_t i = 0u; i < ops_per_thread; ) {
                     if (queue.try_pop(val)) {
                         ++i;
@@ -284,15 +284,22 @@ auto bench_queue_mixed(std::size_t num_threads, std::size_t ops_per_thread) -> d
 
 using BenchFn = std::function<double(std::size_t, std::size_t)>;
 
+// Each column in the table: a name, benchmark function, and its own ops count
+// (so int and heavy columns can use different ops counts in the same table).
+struct BenchEntry {
+    std::string name;
+    BenchFn fn;
+    std::size_t ops;
+};
+
 auto run_suite(
     const std::string& title,
-    const std::vector<std::pair<std::string, BenchFn>>& versions,
-    const std::vector<std::size_t>& thread_counts,
-    std::size_t ops_per_thread
+    const std::vector<BenchEntry>& versions,
+    const std::vector<std::size_t>& thread_counts
 ) -> void {
 
     constexpr int tcol = 9;
-    constexpr int vcol = 18;
+    constexpr int vcol = 16;
 
     std::cout << "\n"
               << std::string(60u, '=') << "\n"
@@ -302,7 +309,7 @@ auto run_suite(
     // header
     std::cout << std::setw(tcol) << "Threads";
     for (const auto& v : versions) {
-        std::cout << " | " << std::setw(vcol) << v.first;
+        std::cout << " | " << std::setw(vcol) << v.name;
     }
     std::cout << "\n";
 
@@ -318,18 +325,18 @@ auto run_suite(
         std::cout << std::setw(tcol) << tc;
 
         for (const auto& v : versions) {
-            auto elapsed_ms = v.second(tc, ops_per_thread);
+            auto elapsed_ms = v.fn(tc, v.ops);
             if (elapsed_ms <= 0.0) {
                 std::cout << " | " << std::setw(vcol) << "N/A";
                 continue;
             }
-            auto total_ops  = static_cast<double>(tc * ops_per_thread);
+            auto total_ops  = static_cast<double>(tc * v.ops);
             auto throughput = total_ops / (elapsed_ms / 1000.0);
             std::cout << " | " << std::setw(vcol) << format_throughput(throughput);
         }
 
         std::cout << "\n";
-        std::cout.flush();  // flush after each row so user sees progress
+        std::cout.flush();
     }
 
     std::cout << "\n";
@@ -349,6 +356,9 @@ auto main(int argc, char* argv[]) -> int {
             ops = static_cast<std::size_t>(parsed);
         }
     }
+
+    // heavy payloads use fewer ops to keep memory reasonable (~800 MB peak)
+    auto heavy_ops = std::min(ops, MAX_HEAVY_OPS);
 
     auto hwc = static_cast<std::size_t>(std::thread::hardware_concurrency());
     if (hwc == 0u) { hwc = 4u; }
@@ -370,34 +380,38 @@ auto main(int argc, char* argv[]) -> int {
     std::cout << "Thread-Safe Data Structure Benchmark\n"
               << std::string(40u, '=') << "\n"
               << "Hardware concurrency : " << hwc << "\n"
-              << "Ops per thread       : " << ops << "\n"
+              << "Ops per thread (int) : " << ops << "\n"
+              << "Ops per thread (1KB) : " << heavy_ops << "\n"
               << "Runs per config      : " << NUM_RUNS << " (median)\n";
 
     // ── Stack ────────────────────────────────────────────
 
     run_suite("Stack: Push-Only (write contention)", {
-        {"TSS v1 (mutex, T)", bench_push_only<TSS<int>>},
+        {"TSS v1 (int)",  bench_push_only<TSS<int>, int>,                     ops},
+        {"TSS v1 (1KB)",  bench_push_only<TSS<HeavyPayload>, HeavyPayload>,  heavy_ops},
         // ── Add new stack versions here ──────────────────
-        // {"TSS v2 (...)", bench_push_only<TSS_v2<int>>},
-    }, thread_counts, ops);
+    }, thread_counts);
 
     run_suite("Stack: Producer-Consumer", {
-        {"TSS v1 (mutex, T)", bench_stack_mixed<TSS<int>>},
-        // {"TSS v2 (...)", bench_stack_mixed<TSS_v2<int>>},
-    }, mixed_tc, ops);
+        {"TSS v1 (int)",  bench_stack_mixed<TSS<int>, int>,                     ops},
+        {"TSS v1 (1KB)",  bench_stack_mixed<TSS<HeavyPayload>, HeavyPayload>,  heavy_ops},
+    }, mixed_tc);
 
     // ── Queue ────────────────────────────────────────────
 
     run_suite("Queue: Push-Only (write contention)", {
-        {"TSQ v1 (mutex, T)", bench_push_only<TSQ<int>>},
-        // ── Add new queue versions here ──────────────────
-        {"TSQ v2 (mutex, shared_ptr<T>)", bench_push_only<TSQv2<int>>},
-    }, thread_counts, ops);
+        {"TSQ v1 (int)",  bench_push_only<TSQ<int>, int>,                         ops},
+        {"TSQ v2 (int)",  bench_push_only<TSQv2<int>, int>,                       ops},
+        {"TSQ v1 (1KB)",  bench_push_only<TSQ<HeavyPayload>, HeavyPayload>,      heavy_ops},
+        {"TSQ v2 (1KB)",  bench_push_only<TSQv2<HeavyPayload>, HeavyPayload>,    heavy_ops},
+    }, thread_counts);
 
     run_suite("Queue: Producer-Consumer", {
-        {"TSQ v1 (mutex)", bench_queue_mixed<TSQ<int>>},
-        {"TSQ v2 (mutex, shared_ptr<T>)", bench_queue_mixed<TSQv2<int>>},
-    }, mixed_tc, ops);
+        {"TSQ v1 (int)",  bench_queue_mixed<TSQ<int>, int>,                         ops},
+        {"TSQ v2 (int)",  bench_queue_mixed<TSQv2<int>, int>,                       ops},
+        {"TSQ v1 (1KB)",  bench_queue_mixed<TSQ<HeavyPayload>, HeavyPayload>,      heavy_ops},
+        {"TSQ v2 (1KB)",  bench_queue_mixed<TSQv2<HeavyPayload>, HeavyPayload>,    heavy_ops},
+    }, mixed_tc);
 
     return 0;
 }

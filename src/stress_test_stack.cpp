@@ -16,6 +16,7 @@
 #include <thread>
 #include <vector>
 
+#include "bench_types.hpp"
 #include "thread_safe_stack.hpp"
 // ── Add new version headers here ─────────────────────────
 // #include "thread_safe_stack_v2.hpp"
@@ -32,8 +33,9 @@ constexpr std::size_t NUM_ITERATIONS   = 10;
 //  N threads each push a unique range of values [t*M, (t+1)*M).
 //  After all threads join, pop everything and verify the
 //  exact set of values is present — no loss, no duplicates.
+//  T = element type (int or HeavyPayload).
 
-template<typename Stack>
+template<typename Stack, typename T = int>
 auto test_concurrent_push(const std::string& label, std::size_t num_threads) -> bool {
     std::cout << "  [" << label << "] concurrent push ("
               << num_threads << " threads x " << ITEMS_PER_THREAD << " items)... ";
@@ -49,14 +51,14 @@ auto test_concurrent_push(const std::string& label, std::size_t num_threads) -> 
             threads.emplace_back([&stack, t]() {
                 auto base = static_cast<int>(t * ITEMS_PER_THREAD);
                 for (std::size_t i = 0u; i < ITEMS_PER_THREAD; ++i) {
-                    stack.push(base + static_cast<int>(i));
+                    stack.push(T{base + static_cast<int>(i)});
                 }
             });
         }
         for (auto& th : threads) { th.join(); }
 
         // pop all and verify
-        auto values = std::set<int>{};
+        auto values = std::set<T>{};
         bool ok = true;
 
         while (!stack.empty()) {
@@ -92,7 +94,7 @@ auto test_concurrent_push(const std::string& label, std::size_t num_threads) -> 
 //  was either popped by a consumer or remains in the stack.
 //  Checks for both data loss and duplication.
 
-template<typename Stack>
+template<typename Stack, typename T = int>
 auto test_concurrent_push_pop(const std::string& label, std::size_t num_threads) -> bool {
     std::cout << "  [" << label << "] push+pop ("
               << num_threads << "P + " << num_threads << "C)... ";
@@ -105,14 +107,14 @@ auto test_concurrent_push_pop(const std::string& label, std::size_t num_threads)
         auto threads = std::vector<std::thread>{};
 
         // each consumer collects its popped values
-        auto consumer_values = std::vector<std::vector<int>>(num_threads);
+        auto consumer_values = std::vector<std::vector<T>>(num_threads);
 
         // producers: push unique ranges
         for (std::size_t t = 0u; t < num_threads; ++t) {
             threads.emplace_back([&stack, t]() {
                 auto base = static_cast<int>(t * ITEMS_PER_THREAD);
                 for (std::size_t i = 0u; i < ITEMS_PER_THREAD; ++i) {
-                    stack.push(base + static_cast<int>(i));
+                    stack.push(T{base + static_cast<int>(i)});
                 }
             });
         }
@@ -136,7 +138,7 @@ auto test_concurrent_push_pop(const std::string& label, std::size_t num_threads)
         for (auto& th : threads) { th.join(); }
 
         // drain any remaining items
-        auto remaining = std::vector<int>{};
+        auto remaining = std::vector<T>{};
         while (!stack.empty()) {
             try {
                 auto val = stack.pop();
@@ -147,15 +149,15 @@ auto test_concurrent_push_pop(const std::string& label, std::size_t num_threads)
         }
 
         // merge all values and verify: no dups, no loss
-        auto all = std::set<int>{};
+        auto all = std::set<T>{};
         bool has_dups = false;
 
         for (const auto& cv : consumer_values) {
-            for (auto v : cv) {
+            for (const auto& v : cv) {
                 if (!all.insert(v).second) { has_dups = true; }
             }
         }
-        for (auto v : remaining) {
+        for (const auto& v : remaining) {
             if (!all.insert(v).second) { has_dups = true; }
         }
 
@@ -185,11 +187,16 @@ auto main() -> int {
 
     bool all_passed = true;
 
-    all_passed &= test_concurrent_push<TSS<int>>("TSS v1 (mutex)", hwc);
-    all_passed &= test_concurrent_push_pop<TSS<int>>("TSS v1 (mutex)", hwc);
+    // ── int ──────────────────────────────────────────────
+    all_passed &= test_concurrent_push<TSS<int>, int>("TSS v1 (int)", hwc);
+    all_passed &= test_concurrent_push_pop<TSS<int>, int>("TSS v1 (int)", hwc);
+
+    // ── HeavyPayload (1KB) ───────────────────────────────
+    all_passed &= test_concurrent_push<TSS<HeavyPayload>, HeavyPayload>("TSS v1 (1KB)", hwc);
+    all_passed &= test_concurrent_push_pop<TSS<HeavyPayload>, HeavyPayload>("TSS v1 (1KB)", hwc);
+
     // ── Add new versions here ────────────────────────────
-    // all_passed &= test_concurrent_push<TSS_v2<int>>("TSS v2 (...)", hwc);
-    // all_passed &= test_concurrent_push_pop<TSS_v2<int>>("TSS v2 (...)", hwc);
+    // all_passed &= test_concurrent_push<TSS_v2<int>, int>("TSS v2 (int)", hwc);
 
     std::cout << "\n" << (all_passed ? "All tests PASSED" : "Some tests FAILED") << "\n";
     return all_passed ? 0 : 1;
