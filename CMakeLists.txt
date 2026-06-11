@@ -5,6 +5,15 @@ set(CMAKE_CXX_STANDARD 23) # -std=c++23, cmake should correctly add this
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+find_package(Threads REQUIRED)
+
+# ThreadSanitizer: cmake -DENABLE_TSAN=ON -DCMAKE_BUILD_TYPE=Debug ..
+option(ENABLE_TSAN "Enable ThreadSanitizer" OFF)
+if(ENABLE_TSAN)
+    add_compile_options(-fsanitize=thread -g)
+    add_link_options(-fsanitize=thread)
+endif()
+
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Choose the type of build" FORCE)
     set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
@@ -19,6 +28,7 @@ foreach(source_file ${ALL_SOURCES})
     add_executable(${exe_name} ${source_file})
     
     target_include_directories(${exe_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(${exe_name} PRIVATE Threads::Threads)
     
     target_compile_options(${exe_name} PRIVATE
         # debug build flags

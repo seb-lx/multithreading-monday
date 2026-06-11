@@ -2,12 +2,22 @@
     Based on the book "C++ Concurrency in Action" by Anthony Williams
 */
 
+#pragma once
+
 #include <queue>
 #include <memory>
 #include <condition_variable>
 #include <mutex>
 
 
+// Thread-safe queue, wrapper of std::queue
+//
+// basic thread safety ensured by protection access to shared data with mutex
+// thus coarse lock granularity
+//
+// bad performance since access is serialized, only one thread can access
+// shared data at any given time
+//
 template <typename T>
 class TSQ {
 private:

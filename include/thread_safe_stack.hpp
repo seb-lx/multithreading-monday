@@ -2,6 +2,8 @@
     Based on the book "C++ Concurrency in Action" by Anthony Williams
 */
 
+#pragma once
+
 #include <mutex>
 #include <memory>
 #include <stack>
@@ -12,7 +14,8 @@
 // basic thread safety ensured by protection access to shared data with mutex
 // thus coarse lock granularity
 //
-// combines top() and pop() operations to avoid race conditions
+// combines top() and pop() operations to avoid race conditions inherent in 
+// interface
 //
 // bad performance since access is serialized, only one thread can access
 // shared data at any given time

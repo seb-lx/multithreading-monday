@@ -4,7 +4,9 @@ based on:
 - Multithreading in C++ Lecture at TU Darmstadt
 
 ## why parallel computing?
-- it is not possible to create faster uniprocessors forever (Moore's Law will come to an end, power and heat limit frequency, memory performance bottleneck, instruction-level parallelism diminishing returns compared to large performance boosts in the past through e.g. pipelining and branch prediction)
+- it is not possible to create faster uniprocessors forever
+    - Moore's Law will come to an end, power and heat limit frequency, memory performance bottleneck, instruction-level parallelism diminishing returns compared to large performance boosts in the past through e.g. pipelining and branch prediction
+    - non-linear relationship between size and performance, twice as much chip area for processor does not make it twice as fast (longer signal distances, massive power consumption)
 - multi-core systems place multiple processors on the same chip that share resources, many-core systems (such as GPU's) utilize huge number of cores
 - thread-level parallelism as the only option to significantly speed up programs
 
